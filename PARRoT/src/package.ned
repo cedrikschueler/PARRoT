@@ -1,0 +1,3 @@
+package parrot;
+
+@license(LGPL);
