@@ -36,15 +36,12 @@ simple PARRoT like IManetRouting
         double mhChirpInterval @unit(s) = default(1s);
         
         // Reinforcement Learning
-        double qFctAlpha = default(0.3);
-        double qFctGamma = default(0.2);
         string combinationMethod = default("M");
         
         // Mobility Prediction
         int historySize = default(5);
-        string predictionMethod = default("slope");        
+        string predictionMethod = default("waypoint");        
         bool advancedMobility = default(false);
-        double rangeOffset = default(0.0);
                 
         // Basic Configureation
         string netmask = default("255.255.0.0");  // netmask for the ad-hoc network

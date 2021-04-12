@@ -5,7 +5,10 @@
  *      Author: cedrik
  */
 #include "PARRoT.h"
-
+#include "svm.h"
+#include "rf.h"
+#include "ann.h"
+#define MAX_BACKOFF_COUNTER 32
 namespace inet {
 
 Define_Module(PARRoT);
@@ -47,20 +50,20 @@ void PARRoT::initialize(int stage) {
 		useOHRepair = par("useOHRepair");
 
 		// Reinforcement Learning
-		qFctAlpha = par("qFctAlpha");
-		qFctGamma = par("qFctGamma");
-		combinationMethod = par("combinationMethod").stdstringValue();
+		combinationMethod = "M";
 
 		// Mobility Prediction
 		historySize = par("historySize");
 		predictionMethod = par("predictionMethod").stdstringValue();
 		advancedMobility = par("advancedMobility");
-		rangeOffset = par("rangeOffset");
-
 
 		// Create reminder messages
 		multiHopChirpReminder = new cMessage("multiHopChirpReminder");
 		destinationReminder = new cMessage("destinationReminder");
+
+		m_backoffCounter = 1;
+		m_maxBackoff = 1;
+		checkEnvironment("friis");
 	}
 	else if (stage == INITSTAGE_ROUTING_PROTOCOLS) {
 		registerService(Protocol::manet, nullptr, gate("ipIn"));
@@ -134,6 +137,58 @@ void PARRoT::stop() {
 
 }
 void PARRoT::finish() {
+}
+
+void PARRoT::checkEnvironment(std::string fallback){
+    std::string res = "invalid";
+    std::string m_classificator("rf");
+    // Select classificator and predict
+    if(m_classificator == "svm"){
+        res = svm::predict(m_d_max, m_d_min, m_d_mean, m_d_std, m_rss_max, m_rss_min, m_rss_mean, m_rss_std);
+    }else if(m_classificator == "rf"){
+        res = rf::predict(m_d_max, m_d_min, m_d_mean, m_d_std, m_rss_max, m_rss_min, m_rss_mean, m_rss_std);
+    }else if(m_classificator == "ann"){
+        res = ann::predict(m_d_max, m_d_min, m_d_mean, m_d_std, m_rss_max, m_rss_min, m_rss_mean, m_rss_std);
+    }else{
+        throw;
+    }
+
+    if(m_environment == res){
+        // No Environment change
+        m_maxBackoff = std::min(m_maxBackoff*2, MAX_BACKOFF_COUNTER);
+        m_backoffCounter = m_maxBackoff;
+    }else{
+        // Environment changed, need fast re-evaluation
+        m_maxBackoff = 1;
+        m_backoffCounter = m_maxBackoff;
+        if (res != "invalid"){
+            m_environment = res;
+        }else{
+            m_environment = fallback;
+        }
+    }
+
+    if (m_environment == "friis"){
+        rangeOffset = -5.0;
+        qFctAlpha = 0.5;
+        qFctGamma = 0.8;
+        qLambda = 1.0;
+        qOmega = 1.0;
+    }else if (m_environment == "nakagami"){
+        rangeOffset = 20.0;
+        qFctAlpha = 0.6;
+        qFctGamma = 0.3;
+        qLambda = 1.0;
+        qOmega = 2.0;
+    }else if (m_environment == "tworay"){
+        rangeOffset = 600.0;
+        qFctAlpha = 0.2;
+        qFctGamma = 0.2;
+        qLambda = 3.0;
+        qOmega = 2.0;
+    }else{
+        throw;
+    }
 }
 
 }	// namespace inet

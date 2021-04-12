@@ -88,9 +88,18 @@ class PARRoT: public RoutingProtocolBase {
 		Ipv4Address m_selfIpv4Address;
 		unsigned short m_squNr = 0;
 
+		// CA-PARRoT variables
+		std::vector<double> m_rssTrace;
+        std::vector<double> m_distanceTrace;
+        double m_rss_min, m_rss_max, m_rss_mean, m_rss_std;
+        double m_d_min, m_d_max, m_d_mean, m_d_std;
+        std::string m_environment;
+        int m_backoffCounter;
+        int m_maxBackoff;
+
 	// Routing
 	protected:
-		int handleIncomingMultiHopChirp(MultiHopChirp *msg, int64_t len);
+		int handleIncomingMultiHopChirp(MultiHopChirp *msg, int64_t len, double rss);
 		bool postliminaryChecksPassed(Ipv4Address origin, Ipv4Address gateway);
 		void sendMultiHopChirp();
 		void refreshRoutingTable(Ipv4Address origin);
@@ -99,6 +108,8 @@ class PARRoT: public RoutingProtocolBase {
 		int handleIncomingOneHopChirp(OneHopChirp *chirp, int64_t len);
 		virtual void handleMessageWhenUp(cMessage *msg) override;
 		virtual void handleSelfMessage(cMessage *msg);
+		void trackRSS(double rss, Coord p_j);
+		void checkEnvironment(std::string fallback="friis");
 
 		double mhChirpInterval;
 		unsigned short maxHops;
@@ -118,6 +129,8 @@ class PARRoT: public RoutingProtocolBase {
 
 		double qFctAlpha;
 		double qFctGamma;
+		double qLambda;
+		double qOmega;
 		double m_Gamma_Mob;
 		std::string combinationMethod;
 

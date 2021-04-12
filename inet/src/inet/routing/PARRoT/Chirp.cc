@@ -7,6 +7,10 @@
 
 #include "PARRoT.h"
 #include <fstream>
+#include "inet/physicallayer/contract/packetlevel/SignalTag_m.h"
+
+#define MAX_RSS_TRACE_SIZE 100
+
 namespace inet {
 // 	Incoming message management
 void PARRoT::handleMessageWhenUp(cMessage *msg) {
@@ -16,13 +20,14 @@ void PARRoT::handleMessageWhenUp(cMessage *msg) {
 	else if (check_and_cast<Packet*>(msg)->getTag<PacketProtocolTag>()->getProtocol()
 	        == &Protocol::manet) {
 		if (strcmp(msg->getName(), "multiHopChirp") == 0) {
+			double receivedSignalStrength = 10*log10(1000*check_and_cast<Packet*>(msg)->getTag<SignalPowerInd>()->getPower().get());
 			auto incomingMultiHop =
 			        (staticPtrCast<MultiHopChirp>(
 			                check_and_cast<Packet*>(msg)->peekData<MultiHopChirp>()->dupShared()));
 			// todo: Only Chunk length (->getBitLength()) or whole packet? (->getTotalLength().get())
 			int remainingHops = handleIncomingMultiHopChirp(
 			        &(*incomingMultiHop),
-			        check_and_cast<Packet*>(msg)->getBitLength());
+			        check_and_cast<Packet*>(msg)->getBitLength(), receivedSignalStrength);
 			if (remainingHops > 0
 			        && postliminaryChecksPassed(incomingMultiHop->getOrigin(),
 			                incomingMultiHop->getHop())) {
@@ -94,8 +99,7 @@ bool PARRoT::postliminaryChecksPassed(Ipv4Address origin, Ipv4Address gateway) {
 		// One neighbor, was this neighbor the sender/origin of the chirp?
 		return !(Vi.begin()->first == origin || Vi.begin()->first == gateway);
 	}
-	else if (rt->findBestMatchingRoute(origin)
-	        && rt->findBestMatchingRoute(origin)->getGateway() != gateway) {
+	else if (getNextHopFor(origin) != gateway){
 		// Neighbor was not the best choice, no need to propagate this.
 		return false;
 	}
@@ -134,6 +138,38 @@ void PARRoT::handleSelfMessage(cMessage *msg) {
 	else {
 		delete msg;
 	}
+}
+
+void PARRoT::trackRSS(double rss, Coord p_j){
+    Coord p_i;
+    p_i = (hist_coord.size() != 0) ? hist_coord[historySize - 1] : Coord::NIL;
+
+    double d = (p_j - p_i).length();
+
+    if(!isnan(d) || d == 0){
+        m_rssTrace.push_back(rss);
+        m_distanceTrace.push_back(d);
+
+        if(m_rssTrace.size() > MAX_RSS_TRACE_SIZE){
+            m_rssTrace.erase(m_rssTrace.begin());
+            m_distanceTrace.erase(m_distanceTrace.begin());
+        }
+        if(m_rssTrace.size() > 1){
+            m_rss_min = *std::min_element(m_rssTrace.begin(), m_rssTrace.end());
+            m_rss_max = *std::max_element(m_rssTrace.begin(), m_rssTrace.end());
+            m_rss_mean = std::accumulate(m_rssTrace.begin(), m_rssTrace.end(), 0.0)/ (1.0 * m_rssTrace.size());
+            double std_dev = 0.0;
+            std::for_each(m_rssTrace.begin(), m_rssTrace.end(), [&std_dev, this](double &d) { std_dev += (d - m_rss_mean)*(d-m_rss_mean); });
+            m_rss_std = std::sqrt(1/((double)m_rssTrace.size() - 1)*std_dev);
+
+            m_d_min = *std::min_element(m_distanceTrace.begin(), m_distanceTrace.end());
+            m_d_max = *std::max_element(m_distanceTrace.begin(), m_distanceTrace.end());
+            m_d_mean = std::accumulate(m_distanceTrace.begin(), m_distanceTrace.end(), 0.0)/ (1.0 * m_distanceTrace.size());
+            std_dev = 0.0;
+            std::for_each(m_distanceTrace.begin(), m_distanceTrace.end(), [this, &std_dev](double &d) { std_dev += (d - m_d_mean)*(d-m_d_mean); });
+            m_d_std = std::sqrt(1/((double)m_distanceTrace.size() - 1)*std_dev);
+        }
+    }
 }
 
 void PARRoT::updateGamma_Mob() {
@@ -179,7 +215,7 @@ void PARRoT::updateGamma_Mob() {
 	                0.0;
 }
 //	Multi-Hop signalling (incoming)
-int PARRoT::handleIncomingMultiHopChirp(MultiHopChirp *chirp, int64_t len) {
+int PARRoT::handleIncomingMultiHopChirp(MultiHopChirp *chirp, int64_t len, double rss) {
 	Ipv4Address origin = chirp->getOrigin();
 	Ipv4Address gateway = chirp->getHop();
 
@@ -196,6 +232,8 @@ int PARRoT::handleIncomingMultiHopChirp(MultiHopChirp *chirp, int64_t len) {
 	unsigned short squNr = chirp->getSquNr();
 
 	int hopCount = chirp->getHopCount();
+
+	trackRSS(rss, Coord(x, y, z));
 
 	if (origin == m_selfIpv4Address) {
 		return 0;
@@ -231,7 +269,6 @@ int PARRoT::handleIncomingMultiHopChirp(MultiHopChirp *chirp, int64_t len) {
 		Gateways[origin] = gw;
 		float qval = qFunction(origin, gateway);
 		PCE *data_ = Gateways.at(origin).at(gateway);
-		data_->Q(qval);
 	}
 	else {
 		// Case 2: Origin was captured as destination, but not via this hop
@@ -245,8 +282,6 @@ int PARRoT::handleIncomingMultiHopChirp(MultiHopChirp *chirp, int64_t len) {
 			data->squNr(squNr);
 			data->V(val);
 			gw->second[gateway] = data;
-			Gateways[origin][gateway]->Q(
-			        qFunction(origin, gateway));
 		}
 		else {
 			// Case 3: Origin was already captured as destination via this hop
@@ -256,15 +291,12 @@ int PARRoT::handleIncomingMultiHopChirp(MultiHopChirp *chirp, int64_t len) {
 				gw->second[gateway]->squNr(squNr);
 				gw->second[gateway]->lastSeen(simTime().dbl());
 				gw->second[gateway]->V(val);
-				gw->second[gateway]->Q(qFunction(origin, gateway));
 			}
 			else {
 				return 0;
 			}
 		}
 	}
-
-	refreshRoutingTable(origin);
 	return --hopCount;
 }
 
@@ -316,25 +348,26 @@ void PARRoT::refreshRoutingTable(Ipv4Address origin) {
 }
 
 void PARRoT::purgeNeighbors() {
+
 	// First delete invalid entrys
 	for (std::map<Ipv4Address, std::map<Ipv4Address, PCE*>>::iterator t =
 	        Gateways.begin(); t != Gateways.end(); t++) {
 		Ipv4Address target = t->first;
-
 		for (std::map<Ipv4Address, PCE*>::iterator act =
 		        Gateways.find(target)->second.begin();
-		        act != Gateways.find(target)->second.end(); act++) {
+		        act != Gateways.find(target)->second.end();) {
 			double deltaT = simTime().dbl() - act->second->lastSeen();
 			if (deltaT > std::min(std::max(neighborReliabilityTimeout, mhChirpInterval), Gamma_Pos(act->first))){
 				delete act->second;
-				Gateways.at(target).erase(act);
+				act = Gateways.at(target).erase(act);
+			}else{
+			    act++;
 			}
 		}
 	}
 
 	// Check if neighbor is still usefull
-	for (std::map<Ipv4Address, PDC*>::iterator n = Vi.begin(); n != Vi.end();
-	        n++) {
+	for (std::map<Ipv4Address, PDC*>::iterator n = Vi.begin(); n != Vi.end();) {
 		bool useful = false;
 		for (std::map<Ipv4Address, std::map<Ipv4Address, PCE*>>::iterator t =
 		        Gateways.begin(); t != Gateways.end(); t++) {
@@ -342,7 +375,9 @@ void PARRoT::purgeNeighbors() {
 		}
 		if (!useful) {
 			delete n->second;
-			Vi.erase(n);
+			n = Vi.erase(n);
+		}else{
+		    n++;
 		}
 	}
 }
@@ -391,8 +426,22 @@ int PARRoT::handleIncomingOneHopChirp(OneHopChirp *chirp, int64_t len) {
 	}
 	return 0;
 }
+
 //	Multi-Hop signalling (outgoing)
 void PARRoT::sendMultiHopChirp() {
+    m_backoffCounter--;
+    if(m_backoffCounter <= 0){
+        checkEnvironment();
+    }
+	// Update all Q-Values and reset candidates
+	for(std::map<Ipv4Address, std::map<Ipv4Address, PCE*>>::iterator it = Gateways.begin(); it != Gateways.end(); it++){
+		for(std::map<Ipv4Address, PCE*>::iterator gw = it->second.begin(); gw != it->second.end(); gw++){
+			PCE* data = gw->second;
+			// Re-calculate stored Q-Value
+			data->Q(qFunction(it->first, gw->first));
+		}
+		refreshRoutingTable(it->first);
+	}
 	auto chirp = makeShared<MultiHopChirp>();
 
 	// Set identification fields
@@ -422,13 +471,9 @@ void PARRoT::sendMultiHopChirp() {
 	chirp->setGamma_mob((float)m_Gamma_Mob);
 
 	// Set value (initially to 1 respectively 100%)
-	chirp->setValue(1);
+	chirp->setValue(1.0);
 	chirp->setHopCount(maxHops);
 
-//	int totalByteLength = sizeof(m_selfIpv4Address) * 2
-//	        + sizeof(m_squNr)
-//	        + 6 * sizeof(p.getX())
-//	        + 2*sizeof(m_Gamma_Mob) + sizeof(maxHops);
 	int totalByteLength = sizeof(m_selfIpv4Address)
 	        + sizeof(m_squNr)
 	        + 6 * sizeof((float)p.getX())

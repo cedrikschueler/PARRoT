@@ -45,8 +45,8 @@ double PARRoT::combineDiscounts(std::vector<double> gamma) {
 double PARRoT::qFunction(Ipv4Address target, Ipv4Address hop) {
 	std::vector<double> discounts;
 	discounts.push_back(qFctGamma);
-	discounts.push_back(std::min(1.0, sqrt(std::max(Gamma_Pos(hop), 0.0)/(std::max(neighborReliabilityTimeout, mhChirpInterval))) ));
-	discounts.push_back(Vi.at(hop)->Gamma_Mob());
+	discounts.push_back(pow(std::min(1.0, sqrt(std::max(Gamma_Pos(hop), 0.0)/(std::max(neighborReliabilityTimeout, mhChirpInterval))) ), qLambda));
+	discounts.push_back(pow(Vi.at(hop)->Gamma_Mob(), qOmega));
 
 	return (1 - qFctAlpha) * Gateways.at(target).at(hop)->Q()
 			+ qFctAlpha
@@ -82,11 +82,11 @@ Ipv4Address PARRoT::getNextHopFor(Ipv4Address target) {
 	if(Gateways.find(target) != Gateways.end()){
 	for (std::map<Ipv4Address, PCE*>::iterator act =
 	        Gateways.find(target)->second.begin();
-	        act != Gateways.find(target)->second.end(); act++) {
+	        act != Gateways.find(target)->second.end();) {
 		double deltaT = simTime().dbl() - act->second->lastSeen();
 		if (deltaT	<= std::min(std::max(neighborReliabilityTimeout, mhChirpInterval), Gamma_Pos(act->first))) {
 
-		if (act == Gateways.find(target)->second.begin()) {
+		    if (act == Gateways.find(target)->second.begin()) {
 //				 First possible action, make sure the result gets this value anyway
 				res = qFunction(target, act->first);
 				a = act->first;
@@ -95,10 +95,10 @@ Ipv4Address PARRoT::getNextHopFor(Ipv4Address target) {
 				res = qFunction(target, act->first); //act->second->Q();
 				a = act->first;
 			}
+		    act++;
 		}
 		else {
-			delete act->second;
-			Gateways.at(target).erase(act);
+            act++;
 		}
 	}
 	}
